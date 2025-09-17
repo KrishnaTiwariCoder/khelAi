@@ -10,12 +10,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStartTest }) => {
   const futureSports = [
     { name: 'High Jump', icon: '🏃‍♂️', category: 'Track & Field' },
     { name: 'Long Jump', icon: '🏃‍♀️', category: 'Track & Field' },
-    { name: 'Javelin Throw', icon: '🏹', category: 'Field Events' },
-    { name: 'Gymnastics', icon: '🤸‍♀️', category: 'Artistic' },
-    { name: 'Weightlifting', icon: '🏋️‍♂️', category: 'Strength' },
-    { name: 'Boxing/MMA', icon: '🥊', category: 'Combat' },
     { name: 'Running', icon: '🏃', category: 'Endurance' },
-    { name: 'Cycling', icon: '🚴‍♀️', category: 'Endurance' }
+
   ];
 
   return (

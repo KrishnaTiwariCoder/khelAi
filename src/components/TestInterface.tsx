@@ -343,13 +343,7 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
                   </>
                 )}
                 
-                <div className="text-center p-4 bg-purple-50 rounded-lg col-span-2">
-                  <div className="text-2xl font-bold text-purple-600">
-                    {feedback ? Math.round(feedback.confidence * 100) : 0}%
-                  </div>
-                  <div className="text-purple-600 font-medium">AI Confidence</div>
-                </div>
-              </div>
+               
             </div>
 
             {/* Instructions */}

@@ -14,7 +14,7 @@ export class TeachableMachineManager {
   async initialize() {
     try {
       // Use the model URL from the documentation
-      const URL = "https://teachablemachine.withgoogle.com/models/Swt15q3gA/";
+      const URL = "https://teachablemachine.withgoogle.com/models/uuMrJlamL/";
       const modelURL = URL + "model.json";
       const metadataURL = URL + "metadata.json";
       
