@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera, Play, Pause, RotateCcw, CheckCircle, AlertCircle } from 'lucide-react';
 import { tmManager } from '../utils/teachableMachine';
 import { PostureFeedback } from '../types';
@@ -18,6 +18,8 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
   const [feedback, setFeedback] = useState<PostureFeedback | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [lastValidRep, setLastValidRep] = useState(false);
+  const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   const testConfig = {
     plank: {
@@ -45,85 +47,164 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
 
   const config = testConfig[testType];
 
+  // Initialize camera only once
+  const initializeCamera = useCallback(async () => {
+    try {
+      setIsInitializing(true);
+      setInitializationError(null);
+      setCameraReady(false);
+      
+      console.log('🚀 Starting camera initialization...');
+      
+      // First initialize the model
+      console.log('📚 Loading AI model...');
+      const modelLoaded = await tmManager.initialize();
+      if (!modelLoaded) {
+        throw new Error('Failed to load Teachable Machine model');
+      }
+      console.log('✅ AI model loaded successfully');
+      
+      // Then setup the webcam
+      if (videoRef.current) {
+        console.log('🎥 Setting up webcam...');
+        const webcam = await tmManager.setupWebcam(videoRef.current);
+        
+        if (!webcam) {
+          throw new Error('Webcam setup failed - no webcam instance returned');
+        }
+        
+        // Double check that everything is ready
+        console.log('🔍 Verifying camera readiness...');
+        let retries = 0;
+        while (!tmManager.isReady() && retries < 10) {
+          console.log(`⏳ Waiting for camera... (attempt ${retries + 1}/10)`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          retries++;
+        }
+        
+        if (tmManager.isReady()) {
+          console.log('🎉 All systems ready! Camera initialization complete.');
+          setCameraReady(true);
+        } else {
+          throw new Error(`Camera setup incomplete after ${retries} retries`);
+        }
+      } else {
+        throw new Error('Video element not found');
+      }
+    } catch (error) {
+      console.error('❌ Camera initialization failed:', error);
+      setInitializationError(error instanceof Error ? error.message : 'Unknown error');
+      setCameraReady(false);
+    } finally {
+      setIsInitializing(false);
+    }
+  }, []);
+
+  // Initialize on component mount
   useEffect(() => {
     initializeCamera();
+    
+    // Cleanup on unmount
     return () => {
       tmManager.cleanup();
     };
-  }, []);
+  }, [initializeCamera]);
 
+  // Pose analysis effect - only runs when camera is ready and test is active
   useEffect(() => {
     let interval: NodeJS.Timeout;
     
-    if (isActive && cameraReady) {
+    if (isActive && cameraReady && tmManager.isReady()) {
+      console.log('▶️ Starting pose analysis loop...');
+      
       interval = setInterval(async () => {
-        if (testType === 'plank') {
-          setTime(prev => prev + 1);
-        }
-        
-        // Analyze pose
         try {
+          // Analyze pose
           const poseFeedback = await tmManager.analyzePose(testType);
           setFeedback(poseFeedback);
           
-          // Count reps for push-ups and sit-ups
-          if (testType !== 'plank' && poseFeedback.isValid && !lastValidRep) {
-            setReps(prev => prev + 1);
-            setValidReps(prev => prev + 1);
-            setLastValidRep(true);
-          } else if (!poseFeedback.isValid && lastValidRep) {
-            setLastValidRep(false);
+          // Handle plank timing
+          if (testType === 'plank') {
+            if (poseFeedback.isValid) {
+              setTime(prev => prev + 0.1);
+            }
+          } else {
+            // Handle reps for push-ups and sit-ups
+            if (poseFeedback.isValid && !lastValidRep) {
+              setReps(prev => prev + 1);
+              setValidReps(prev => prev + 1);
+              setLastValidRep(true);
+              console.log('✅ Valid rep detected!');
+            } else if (!poseFeedback.isValid && lastValidRep) {
+              setLastValidRep(false);
+            }
           }
         } catch (error) {
-          console.error('Pose analysis error:', error);
+          console.error('❌ Pose analysis error:', error);
+          setFeedback({
+            isValid: false,
+            confidence: 0,
+            message: 'Analysis error occurred'
+          });
         }
       }, 100);
     }
     
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
   }, [isActive, cameraReady, testType, lastValidRep]);
 
-  const initializeCamera = async () => {
-    try {
-      await tmManager.initialize();
-      if (videoRef.current) {
-        await tmManager.setupWebcam(videoRef.current);
-        setCameraReady(true);
-      }
-    } catch (error) {
-      console.error('Camera initialization failed:', error);
-    }
-  };
-
   const startTest = () => {
+    if (!cameraReady || !tmManager.isReady()) {
+      console.warn('⚠️ Attempted to start test but camera not ready');
+      return;
+    }
+    
+    console.log('🏁 Starting test...');
     setIsActive(true);
   };
 
   const pauseTest = () => {
+    console.log('⏸️ Pausing test...');
     setIsActive(false);
   };
 
   const completeTest = () => {
+    console.log('🏁 Completing test...');
     setIsActive(false);
+    
     if (testType === 'plank') {
-      onTestComplete({ duration: time });
+      onTestComplete({ duration: Math.round(time * 10) / 10 });
     } else {
       onTestComplete({ reps, validReps });
     }
   };
 
   const resetTest = () => {
+    console.log('🔄 Resetting test...');
     setIsActive(false);
     setTime(0);
     setReps(0);
     setValidReps(0);
     setFeedback(null);
+    setLastValidRep(false);
+  };
+
+  const retryInitialization = () => {
+    console.log('🔄 Retrying camera initialization...');
+    setCameraReady(false);
+    setInitializationError(null);
+    initializeCamera();
   };
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    const secs = Math.floor(seconds % 60);
+    const tenths = Math.floor((seconds % 1) * 10);
+    return `${mins}:${secs.toString().padStart(2, '0')}.${tenths}`;
   };
 
   const getColorClasses = (color: string) => {
@@ -163,9 +244,14 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
                 <span className="text-white font-medium">Live Camera Feed</span>
               </div>
               <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                cameraReady ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                cameraReady ? 'bg-green-100 text-green-800' : 
+                isInitializing ? 'bg-yellow-100 text-yellow-800' :
+                initializationError ? 'bg-red-100 text-red-800' : 
+                'bg-gray-100 text-gray-800'
               }`}>
-                {cameraReady ? 'Ready' : 'Initializing...'}
+                {cameraReady ? 'Ready' : 
+                 isInitializing ? 'Initializing...' :
+                 initializationError ? 'Error' : 'Not Ready'}
               </div>
             </div>
             
@@ -178,32 +264,57 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
                 className="w-full h-full object-cover"
               />
               
-              {/* Pose Overlay */}
-              <div className="absolute inset-0 pointer-events-none">
-                {feedback && (
-                  <div className={`absolute top-4 left-4 right-4 p-3 rounded-lg ${
-                    feedback.isValid 
-                      ? 'bg-green-900/80 text-green-100' 
-                      : 'bg-red-900/80 text-red-100'
-                  }`}>
-                    <div className="flex items-center space-x-2">
-                      {feedback.isValid ? (
-                        <CheckCircle className="w-5 h-5" />
-                      ) : (
-                        <AlertCircle className="w-5 h-5" />
-                      )}
-                      <span className="font-medium">{feedback.message}</span>
-                    </div>
-                    {feedback.corrections && (
-                      <div className="mt-2 text-sm">
-                        {feedback.corrections.map((correction, idx) => (
-                          <div key={idx}>• {correction}</div>
-                        ))}
-                      </div>
-                    )}
+              {/* Error Message Overlay */}
+              {initializationError && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                  <div className="text-center text-white p-6">
+                    <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">Camera Initialization Failed</h3>
+                    <p className="text-sm text-gray-300 mb-4">{initializationError}</p>
+                    <button
+                      onClick={retryInitialization}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                    >
+                      Retry
+                    </button>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* Loading Overlay */}
+              {isInitializing && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                  <div className="text-center text-white">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
+                    <p>Initializing camera and AI model...</p>
+                  </div>
+                </div>
+              )}
+              
+              {/* Pose Feedback Overlay */}
+              {feedback && cameraReady && (
+                <div className={`absolute top-4 left-4 right-4 p-3 rounded-lg ${
+                  feedback.isValid 
+                    ? 'bg-green-900/80 text-green-100' 
+                    : 'bg-red-900/80 text-red-100'
+                }`}>
+                  <div className="flex items-center space-x-2">
+                    {feedback.isValid ? (
+                      <CheckCircle className="w-5 h-5" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5" />
+                    )}
+                    <span className="font-medium">{feedback.message}</span>
+                  </div>
+                  {feedback.corrections && (
+                    <div className="mt-2 text-sm">
+                      {feedback.corrections.map((correction, idx) => (
+                        <div key={idx}>• {correction}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -215,8 +326,8 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
               
               <div className="grid grid-cols-2 gap-4">
                 {testType === 'plank' ? (
-                  <div className="text-center p-4 bg-blue-50 rounded-lg">
-                    <div className="text-3xl font-bold text-blue-600">{formatTime(time)}</div>
+                  <div className="text-center p-4 bg-blue-50 rounded-lg col-span-2">
+                    <div className="text-4xl font-bold text-blue-600">{formatTime(time)}</div>
                     <div className="text-blue-600 font-medium">Duration</div>
                   </div>
                 ) : (
@@ -232,11 +343,11 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
                   </>
                 )}
                 
-                <div className="text-center p-4 bg-purple-50 rounded-lg">
+                <div className="text-center p-4 bg-purple-50 rounded-lg col-span-2">
                   <div className="text-2xl font-bold text-purple-600">
                     {feedback ? Math.round(feedback.confidence * 100) : 0}%
                   </div>
-                  <div className="text-purple-600 font-medium">Confidence</div>
+                  <div className="text-purple-600 font-medium">AI Confidence</div>
                 </div>
               </div>
             </div>
@@ -259,7 +370,7 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
                 {!isActive ? (
                   <button
                     onClick={startTest}
-                    disabled={!cameraReady}
+                    disabled={!cameraReady || isInitializing}
                     className={`flex-1 py-3 px-6 rounded-lg font-semibold flex items-center justify-center space-x-2 ${getColorClasses(config.color)} disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     <Play className="w-5 h-5" />
@@ -277,14 +388,16 @@ export const TestInterface: React.FC<TestInterfaceProps> = ({ testType, onTestCo
                 
                 <button
                   onClick={resetTest}
-                  className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-semibold flex items-center justify-center hover:bg-gray-50"
+                  disabled={isInitializing}
+                  className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-semibold flex items-center justify-center hover:bg-gray-50 disabled:opacity-50"
                 >
                   <RotateCcw className="w-5 h-5" />
                 </button>
                 
                 <button
                   onClick={completeTest}
-                  className="px-6 py-3 bg-gray-800 text-white rounded-lg font-semibold hover:bg-gray-900"
+                  disabled={!cameraReady || isInitializing}
+                  className="px-6 py-3 bg-gray-800 text-white rounded-lg font-semibold hover:bg-gray-900 disabled:opacity-50"
                 >
                   Complete
                 </button>
